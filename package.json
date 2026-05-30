@@ -1,0 +1,55 @@
+{
+  "name": "@orbserv-labs/orb-wallet",
+  "version": "0.1.0",
+  "description": "TypeScript SDK for the orbserv agent wallet API — multi-chain wallets, x402 auto-pay, and spending policies for AI agents",
+  "keywords": [
+    "wallet",
+    "agent-wallet",
+    "x402",
+    "solana",
+    "base",
+    "ethereum",
+    "arbitrum",
+    "usdc",
+    "ai-agent",
+    "orbserv"
+  ],
+  "homepage": "https://orbserv.co",
+  "license": "MIT",
+  "author": "orbserv Labs",
+  "main": "./dist/index.js",
+  "module": "./dist/index.js",
+  "types": "./dist/index.d.ts",
+  "exports": {
+    ".": {
+      "import": {
+        "types": "./dist/index.d.ts",
+        "default": "./dist/index.js"
+      },
+      "require": {
+        "types": "./dist/index.d.cts",
+        "default": "./dist/index.cjs"
+      }
+    }
+  },
+  "files": [
+    "dist",
+    "README.md",
+    "LICENSE"
+  ],
+  "scripts": {
+    "build": "tsc -p tsconfig.build.json",
+    "build:cjs": "tsc -p tsconfig.build.json --module commonjs --outDir dist/cjs",
+    "dev": "tsc --watch",
+    "lint": "tsc --noEmit",
+    "prepublishOnly": "npm run lint && npm run build",
+    "clean": "rm -rf dist"
+  },
+  "engines": {
+    "node": ">=18.0.0"
+  },
+  "devDependencies": {
+    "@types/node": "^20.19.41",
+    "typescript": "^5.9.3"
+  }
+}
