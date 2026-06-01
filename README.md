@@ -176,6 +176,50 @@ try {
 
 ---
 
+## MCP Server — Use with Claude
+
+The `@orbserv-labs/orb-wallet` package includes an MCP server so Claude (and any MCP-compatible AI) can create wallets, send payments, and manage policies through natural conversation.
+
+### Setup with Claude Desktop
+
+Add to `~/Library/Application Support/Claude/claude_desktop_config.json`:
+
+```json
+{
+  "mcpServers": {
+    "orb-wallet": {
+      "command": "npx",
+      "args": ["-y", "@orbserv-labs/orb-wallet", "orb-wallet-mcp"],
+      "env": {
+        "ORB_API_KEY": "orb_your_api_key_here",
+        "ORB_BASE_URL": "https://api.orbserv.co/v1"
+      }
+    }
+  }
+}
+```
+
+### Available tools
+
+| Tool | Description |
+|---|---|
+| `create_wallet` | Create a new agent wallet |
+| `list_wallets` | List all wallets |
+| `get_wallet` | Get a wallet by ID |
+| `send_payment` | Send payment (set `private: true` for ZK privacy) |
+| `get_balance` | Get wallet balance |
+| `set_policy` | Set spending guardrails |
+| `discover_services` | Discover x402-compatible services |
+
+### Privacy mode
+
+```
+You: Send 5 USDC to 0x123... from my agent wallet, keep it private.
+Claude: [calls send_payment with private: true] ✓ Payment sent with ZK privacy enabled.
+```
+
+---
+
 ## License
 
 MIT
