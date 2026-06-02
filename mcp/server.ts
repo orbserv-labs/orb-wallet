@@ -216,33 +216,34 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
         chains: ['solana', 'base', 'ethereum', 'arbitrum'],
       });
       result = {
-        id: wallet.id,
-        name: wallet.name,
+        name:      wallet.name,
+        status:    wallet.status,
+        evm:       wallet.evm?.address    ?? null,
+        solana:    wallet.solana?.address ?? null,
         createdAt: wallet.createdAt,
-        status: wallet.status,
-        evm: wallet.evm,
-        solana: wallet.solana,
+        // internal ID — needed for follow-up operations
+        _id:       wallet.id,
       };
     } else if (name === 'list_wallets') {
       const wallets = await getOrb().wallet.list();
       result = wallets.map((w) => ({
-        id: w.id,
-        name: w.name,
+        name:      w.name,
+        status:    w.status,
+        evm:       w.evm?.address    ?? null,
+        solana:    w.solana?.address ?? null,
         createdAt: w.createdAt,
-        status: w.status,
-        evm: w.evm,
-        solana: w.solana,
+        _id:       w.id,
       }));
     } else if (name === 'get_wallet') {
       const { id } = args as { id: string };
       const wallet = await getOrb().wallet.get(id);
       result = {
-        id: wallet.id,
-        name: wallet.name,
+        name:      wallet.name,
+        status:    wallet.status,
+        evm:       wallet.evm?.address    ?? null,
+        solana:    wallet.solana?.address ?? null,
         createdAt: wallet.createdAt,
-        status: wallet.status,
-        evm: wallet.evm,
-        solana: wallet.solana,
+        _id:       wallet.id,
       };
     } else if (name === 'send_payment') {
       const { walletId, to, amount, token, chain, private: usePrivacy } = args as {
@@ -257,8 +258,8 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
       result = await wallet.send({
         to,
         amount,
-        token: token as import('../dist/types.js').Token,
-        chain: chain as import('../dist/types.js').Chain,
+        token:   token as import('@orbserv-labs/orb-wallet').Token,
+        chain:   chain as import('@orbserv-labs/orb-wallet').Chain,
         privacy: usePrivacy ?? false,
       });
     } else if (name === 'get_balance') {
