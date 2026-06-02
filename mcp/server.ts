@@ -16,7 +16,7 @@ import {
   CallToolRequestSchema,
   ListToolsRequestSchema,
 } from '@modelcontextprotocol/sdk/types.js';
-import { OrbWallet } from '../dist/index.js';
+import { OrbWallet } from '@orbserv-labs/orb-wallet';
 
 // ---------------------------------------------------------------------------
 // SDK client — lazy so the server starts even without ORB_API_KEY
