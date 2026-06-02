@@ -19,13 +19,38 @@ import {
 import { OrbWallet } from '../dist/index.js';
 
 // ---------------------------------------------------------------------------
-// SDK client
+// SDK client — lazy so the server starts even without ORB_API_KEY
 // ---------------------------------------------------------------------------
 
-const orb = new OrbWallet({
-  apiKey: process.env.ORB_API_KEY!,
-  baseUrl: process.env.ORB_BASE_URL ?? 'https://api.orbserv.co/v1',
-});
+const NO_KEY_MSG =
+  '❌ ORB_API_KEY is not set.\n\n' +
+  'To use the orb-wallet MCP:\n' +
+  '1. Sign in at https://app.orbserv.co\n' +
+  '2. Go to API Keys → Create key\n' +
+  '3. Add ORB_API_KEY to your MCP config env\n\n' +
+  'Example .mcp.json:\n' +
+  '{\n' +
+  '  "mcpServers": {\n' +
+  '    "orb-wallet": {\n' +
+  '      "command": "npx",\n' +
+  '      "args": ["-y", "-p", "@orbserv-labs/orb-wallet", "orb-wallet-mcp"],\n' +
+  '      "env": { "ORB_API_KEY": "orb_your_key_here" }\n' +
+  '    }\n' +
+  '  }\n' +
+  '}';
+
+let _orb: OrbWallet | null = null;
+
+function getOrb(): OrbWallet {
+  if (!process.env.ORB_API_KEY) throw new Error(NO_KEY_MSG);
+  if (!_orb) {
+    _orb = new OrbWallet({
+      apiKey: process.env.ORB_API_KEY,
+      baseUrl: process.env.ORB_BASE_URL ?? 'https://api.orbserv.co/v1',
+    });
+  }
+  return _orb;
+}
 
 // ---------------------------------------------------------------------------
 // MCP server
@@ -186,7 +211,7 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
 
     if (name === 'create_wallet') {
       const { name: walletName } = args as { name: string };
-      const wallet = await orb.wallet.create({
+      const wallet = await getOrb().wallet.create({
         name: walletName,
         chains: ['solana', 'base', 'ethereum', 'arbitrum'],
       });
@@ -199,7 +224,7 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
         solana: wallet.solana,
       };
     } else if (name === 'list_wallets') {
-      const wallets = await orb.wallet.list();
+      const wallets = await getOrb().wallet.list();
       result = wallets.map((w) => ({
         id: w.id,
         name: w.name,
@@ -210,7 +235,7 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
       }));
     } else if (name === 'get_wallet') {
       const { id } = args as { id: string };
-      const wallet = await orb.wallet.get(id);
+      const wallet = await getOrb().wallet.get(id);
       result = {
         id: wallet.id,
         name: wallet.name,
@@ -228,7 +253,7 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
         chain: string;
         private?: boolean;
       };
-      const wallet = await orb.wallet.get(walletId);
+      const wallet = await getOrb().wallet.get(walletId);
       result = await wallet.send({
         to,
         amount,
@@ -238,7 +263,7 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
       });
     } else if (name === 'get_balance') {
       const { walletId } = args as { walletId: string };
-      const wallet = await orb.wallet.get(walletId);
+      const wallet = await getOrb().wallet.get(walletId);
       result = await wallet.balance();
     } else if (name === 'set_policy') {
       const { walletId, dailyLimit, maxPerTx, whitelist } = args as {
@@ -247,11 +272,11 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
         maxPerTx?: number;
         whitelist?: string[];
       };
-      const wallet = await orb.wallet.get(walletId);
+      const wallet = await getOrb().wallet.get(walletId);
       result = await wallet.policy.update({ dailyLimit, maxPerTx, whitelist });
     } else if (name === 'discover_services') {
       const { category } = (args ?? {}) as { category?: string };
-      result = await orb.x402.discover({ category });
+      result = await getOrb().x402.discover({ category });
     } else {
       return {
         content: [{ type: 'text', text: `Error: Unknown tool "${name}"` }],
