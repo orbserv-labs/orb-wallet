@@ -1,6 +1,6 @@
 {
   "name": "@orbserv-labs/orb-wallet",
-  "version": "0.1.2",
+  "version": "0.1.3",
   "description": "TypeScript SDK for the orbserv agent wallet API — multi-chain wallets, x402 auto-pay, and spending policies for AI agents",
   "keywords": [
     "wallet",
