@@ -220,6 +220,42 @@ Claude: [calls send_payment with private: true] ✓ Payment sent with ZK privacy
 
 ---
 
+## Custody model
+
+Wallets created through the orbserv SDK are **non-custodial by orbserv** — private keys are held exclusively by [Privy](https://privy.io) in their HSM (Hardware Security Module). orbserv never stores or sees private keys.
+
+```
+SDK / Agent
+    ↓  orb.wallet.create()
+orbserv API
+    ↓  privy.wallets().create({ chain_type: 'ethereum' })
+Privy HSM  ← private key lives here only
+    ↓  returns address + wallet ID
+orbserv DB  ← stores address + Privy wallet ID (no private key)
+    ↓
+SDK receives real on-chain addresses
+```
+
+When an agent sends a transaction:
+
+```
+SDK  →  POST /wallets/:id/send  →  orbserv backend
+                                         ↓
+                                   privy.wallets().rpc(walletId, ...)
+                                         ↓
+                                   Privy signs & broadcasts
+                                         ↓
+                                   Returns tx hash
+```
+
+This means:
+- **Your agents get real on-chain addresses** (EVM + Solana) backed by Privy key management
+- **No key management burden** — you don't need to store, rotate, or secure private keys
+- **Non-custodial by orbserv** — even orbserv itself cannot move funds without Privy
+- **Spending policies enforced server-side** — guardrails cannot be bypassed by SDK callers
+
+---
+
 ## License
 
 MIT
