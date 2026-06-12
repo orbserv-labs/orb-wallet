@@ -1,4 +1,5 @@
 import type { HttpClient } from "../utils/http.js";
+import type { SpendGate } from "../utils/covenant.js";
 import type {
   WalletData,
   ChainAddress,
@@ -7,6 +8,7 @@ import type {
   HistoryOptions,
   HistoryResponse,
   BalanceResponse,
+  FetchOptions,
   X402FetchResult,
 } from "../types.js";
 import { PolicyModule } from "./policy.js";
@@ -68,8 +70,9 @@ export class AgentWallet {
 
   private readonly http: HttpClient;
   private readonly x402Module: X402Module;
+  private readonly spendGate?: SpendGate;
 
-  constructor(data: WalletData, http: HttpClient) {
+  constructor(data: WalletData, http: HttpClient, spendGate?: SpendGate) {
     this.id = data.id;
     this.name = data.name;
     this.createdAt = data.createdAt;
@@ -82,8 +85,9 @@ export class AgentWallet {
     this.evm = data.evm ?? { address: "", chain: "base" };
 
     this.http = http;
+    this.spendGate = spendGate;
     this.policy = new PolicyModule(http, data.id);
-    this.x402Module = new X402Module(http);
+    this.x402Module = new X402Module(http, spendGate);
   }
 
   // -------------------------------------------------------------------------
@@ -97,6 +101,12 @@ export class AgentWallet {
    *   and optional ZK-shielding via `privacy: true`.
    * @returns The resulting {@link Transaction} record.
    *
+   * @remarks
+   * When the SDK is constructed with a `covenant` config, this method calls the
+   * Covenant daemon's `POST /spend/authorize` before submitting the transfer.
+   * A deny throws {@link OrbSpendDeniedError}; an approval forwards the
+   * `decisionId` to the API for audit correlation.
+   *
    * @example
    * ```typescript
    * await wallet.send({
@@ -109,12 +119,26 @@ export class AgentWallet {
    * ```
    */
   async send(options: SendOptions): Promise<Transaction> {
+    const token = options.token ?? "USDC";
+
+    let decisionId = options.spendDecisionId;
+    if (decisionId === undefined && this.spendGate) {
+      decisionId = await this.spendGate.authorizeTransfer({
+        walletId: this.id,
+        chain: options.chain,
+        token,
+        amount: options.amount,
+        destination: options.to,
+      });
+    }
+
     return this.http.post<Transaction>(`/wallets/${this.id}/send`, {
       to: options.to,
       amount: options.amount,
-      token: options.token ?? "USDC",
+      token,
       chain: options.chain,
       privacy: options.privacy ?? false,
+      ...(decisionId ? { spendAuthorization: { decisionId } } : {}),
     });
   }
 
@@ -175,8 +199,12 @@ export class AgentWallet {
    * and retries the request — no manual intervention needed.
    *
    * @param url - The URL to fetch.
-   * @param init - Optional fetch `RequestInit` options.
+   * @param init - Optional fetch options, including `maxAmount` and `chain`.
    * @returns An {@link X402FetchResult} with the final Response.
+   *
+   * @remarks
+   * When the SDK is constructed with a `covenant` config, a 402 challenge is
+   * authorized via the Covenant daemon before the payment is signed.
    *
    * @example
    * ```typescript
@@ -184,7 +212,7 @@ export class AgentWallet {
    * const json = await response.json()
    * ```
    */
-  async fetch(url: string, init?: RequestInit): Promise<X402FetchResult> {
+  async fetch(url: string, init?: FetchOptions): Promise<X402FetchResult> {
     return this.x402Module.fetch(this.id, url, init);
   }
 }

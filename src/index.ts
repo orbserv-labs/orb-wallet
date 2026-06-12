@@ -24,10 +24,23 @@ export { PolicyModule } from "./modules/policy.js";
 export { X402Module } from "./modules/x402.js";
 
 // Error classes
-export { OrbError, OrbApiError, OrbAuthError } from "./utils/errors.js";
+export {
+  OrbError,
+  OrbApiError,
+  OrbAuthError,
+  OrbSpendDeniedError,
+  OrbCovenantError,
+} from "./utils/errors.js";
 
 // HTTP client (exposed for advanced use, e.g. testing)
 export { HttpClient } from "./utils/http.js";
+
+// Covenant spend-authorization (exposed for advanced use / direct authorize)
+export { CovenantSpendAuthzClient, SpendGate } from "./utils/covenant.js";
+export type {
+  SpendAuthorizeRequest,
+  SpendAuthorization,
+} from "./utils/covenant.js";
 
 // All public types
 export type {
@@ -36,6 +49,7 @@ export type {
   Token,
   // Wallet
   OrbWalletOptions,
+  CovenantSpendAuthzConfig,
   CreateWalletOptions,
   WalletData,
   ChainAddress,
@@ -56,5 +70,6 @@ export type {
   X402DiscoverOptions,
   X402DiscoverResponse,
   X402Service,
+  FetchOptions,
   X402FetchResult,
 } from "./types.js";

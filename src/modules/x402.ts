@@ -1,7 +1,12 @@
 import type { HttpClient } from "../utils/http.js";
+import type { SpendGate } from "../utils/covenant.js";
+import { parseX402Challenge } from "../utils/x402-challenge.js";
+import { OrbCovenantError } from "../utils/errors.js";
+import { toAtomicString } from "../utils/chain-assets.js";
 import type {
   X402DiscoverOptions,
   X402DiscoverResponse,
+  FetchOptions,
   X402FetchResult,
 } from "../types.js";
 
@@ -13,9 +18,11 @@ import type {
  */
 export class X402Module {
   private readonly http: HttpClient;
+  private readonly spendGate?: SpendGate;
 
-  constructor(http: HttpClient) {
+  constructor(http: HttpClient, spendGate?: SpendGate) {
     this.http = http;
+    this.spendGate = spendGate;
   }
 
   // -------------------------------------------------------------------------
@@ -58,9 +65,15 @@ export class X402Module {
    *
    * @param walletId - The wallet to charge for the request.
    * @param url - The target URL.
-   * @param init - Optional fetch `RequestInit` options.
+   * @param init - Optional fetch options, including `maxAmount` and `chain`.
    * @returns An {@link X402FetchResult} containing the raw Response and
    *   optional payment receipt information.
+   *
+   * @remarks
+   * When a Covenant spend gate is configured, the SDK first probes the URL
+   * client-side. If the target answers `402`, it parses the challenge and asks
+   * the Covenant daemon to authorize the spend before delegating the signed
+   * payment to the backend. A deny throws {@link OrbSpendDeniedError}.
    *
    * @example
    * ```typescript
@@ -71,8 +84,50 @@ export class X402Module {
   async fetch(
     walletId: string,
     url: string,
-    init?: RequestInit
+    init?: FetchOptions
   ): Promise<X402FetchResult> {
+    let decisionId: string | undefined;
+
+    // With a Covenant gate, preflight the spend client-side: probe the URL,
+    // and only authorize + pay when the target actually demands payment.
+    if (this.spendGate) {
+      const probe = await fetch(url, {
+        method: init?.method ?? "GET",
+        headers: init?.headers,
+        body: init?.body ?? null,
+      });
+
+      // No payment required — return the probe response untouched.
+      if (probe.status !== 402) {
+        return { response: probe };
+      }
+
+      const challenge = await parseX402Challenge(probe, init?.chain);
+      if (!challenge) {
+        throw new OrbCovenantError(
+          `Received 402 from ${url} but could not parse an x402 payment challenge`
+        );
+      }
+
+      // Client-side backstop mirroring the Covenant per-call cap.
+      if (init?.maxAmount !== undefined) {
+        const maxAtomic = toAtomicString(init.maxAmount, "USDC");
+        if (BigInt(challenge.amount) > BigInt(maxAtomic)) {
+          throw new OrbCovenantError(
+            `x402 challenge amount ${challenge.amount} exceeds maxAmount ${maxAtomic}`
+          );
+        }
+      }
+
+      decisionId = await this.spendGate.authorizeChallenge({
+        walletId,
+        network: challenge.network,
+        asset: challenge.asset,
+        atomicAmount: challenge.amount,
+        destination: challenge.destination,
+      });
+    }
+
     // Delegate to the backend proxy endpoint so the server can handle
     // x402 negotiation securely with the wallet's private key.
     const response = await this.http.post<{
@@ -81,12 +136,14 @@ export class X402Module {
       body: string;
       paymentReceipt?: string;
       amountCharged?: number;
+      spendDecisionId?: string;
     }>("/x402/fetch", {
       walletId,
       url,
       method: init?.method ?? "GET",
       headers: init?.headers ?? {},
       body: init?.body ?? null,
+      ...(decisionId ? { spendAuthorization: { decisionId } } : {}),
     });
 
     // Re-construct a Response from the proxied result so callers get a
@@ -100,6 +157,7 @@ export class X402Module {
       response: proxiedResponse,
       paymentReceipt: response.paymentReceipt,
       amountCharged: response.amountCharged,
+      spendDecisionId: response.spendDecisionId ?? decisionId,
     };
   }
 }

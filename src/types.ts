@@ -72,6 +72,13 @@ export interface SendOptions {
    * to obscure the on-chain trail.
    */
   privacy?: boolean;
+  /**
+   * Pre-obtained Covenant decision id. When supplied, the SDK skips its own
+   * pre-spend authorization call and forwards this id to the API for audit
+   * correlation. Most callers should leave this unset and let the configured
+   * Covenant gate authorize automatically.
+   */
+  spendDecisionId?: string;
 }
 
 /** Canonical transaction record. */
@@ -89,6 +96,8 @@ export interface Transaction {
   privacy: boolean;
   createdAt: string;
   confirmedAt?: string;
+  /** Covenant decision id that authorized this spend, when one was used. */
+  spendDecisionId?: string;
 }
 
 /** Options for `AgentWallet.history()`. */
@@ -183,6 +192,21 @@ export interface X402DiscoverResponse {
   total: number;
 }
 
+/** Options for `AgentWallet.fetch()` / `X402Module.fetch()`. */
+export interface FetchOptions extends RequestInit {
+  /**
+   * Maximum USDC to pay for this request. Acts as a client-side backstop that
+   * mirrors the Covenant per-call cap: if the parsed x402 challenge asks for
+   * more, the SDK aborts before authorizing or signing.
+   */
+  maxAmount?: number;
+  /**
+   * Preferred chain when the x402 challenge offers several payment options.
+   * Defaults to the first accepted option.
+   */
+  chain?: Chain;
+}
+
 /** x402 fetch response wrapping the raw Response. */
 export interface X402FetchResult {
   /** The raw fetch Response (body unconsumed). */
@@ -191,11 +215,38 @@ export interface X402FetchResult {
   paymentReceipt?: string;
   /** Amount deducted from the wallet for this call (USDC). */
   amountCharged?: number;
+  /** Covenant decision id that authorized this payment, when one was used. */
+  spendDecisionId?: string;
 }
 
 // =============================================================================
 // OrbWallet constructor options
 // =============================================================================
+
+/**
+ * Optional Covenant spend-authorization configuration.
+ *
+ * When present, the SDK calls the Covenant daemon's `POST /spend/authorize`
+ * surface before signing a `send` or an x402 payment. The daemon checks the
+ * caller's capability, the per-call cap, and the payer's budget, then approves
+ * or denies. Omit this to leave the feature off and rely solely on the
+ * server-side orbserv policy guardrails.
+ *
+ * @see https://github.com/open-covenant/covenant/blob/feat/orbserv-spend-authz/docs/spend-authorization.md
+ */
+export interface CovenantSpendAuthzConfig {
+  /** Daemon gateway base URL, e.g. `http://127.0.0.1:8421`. */
+  gatewayUrl: string;
+  /** Bearer token minted at `$COVENANT_HOME/peers/operator.token`. */
+  token: string;
+  /** Provider tag recorded on the audit row. Defaults to `"orbserv"`. */
+  provider?: string;
+  /**
+   * Per-call cap as an atomic decimal string (the bound the caller enforces).
+   * When omitted, the SDK falls back to the wallet policy's `maxPerTx`.
+   */
+  perCallCap?: string;
+}
 
 /** Options accepted by the `OrbWallet` constructor. */
 export interface OrbWalletOptions {
@@ -206,4 +257,9 @@ export interface OrbWalletOptions {
    * Defaults to `https://api.orbserv.co/v1`.
    */
   baseUrl?: string;
+  /**
+   * Optional Covenant spend-authorization gate. Omit to disable; when set, a
+   * pre-sign authorization call runs before every `send` and x402 payment.
+   */
+  covenant?: CovenantSpendAuthzConfig;
 }

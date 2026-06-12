@@ -1,5 +1,6 @@
 import type { OrbWalletOptions } from "./types.js";
 import { HttpClient } from "./utils/http.js";
+import { CovenantSpendAuthzClient, SpendGate } from "./utils/covenant.js";
 import { WalletModule } from "./modules/wallet.js";
 import { X402Module } from "./modules/x402.js";
 
@@ -66,7 +67,16 @@ export class OrbWallet {
       options.apiKey
     );
 
-    this.wallet = new WalletModule(this.http);
-    this.x402 = new X402Module(this.http);
+    // Optional Covenant spend-authorization gate. When configured, it runs a
+    // pre-sign authorization call before every send and x402 payment.
+    const spendGate = options.covenant
+      ? new SpendGate(
+          new CovenantSpendAuthzClient(options.covenant),
+          this.http
+        )
+      : undefined;
+
+    this.wallet = new WalletModule(this.http, spendGate);
+    this.x402 = new X402Module(this.http, spendGate);
   }
 }

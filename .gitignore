@@ -8,3 +8,4 @@ dist/
 *.d.ts.map
 .DS_Store
 coverage/
+test-covenant-send.mjs

@@ -1,4 +1,5 @@
 import type { HttpClient } from "../utils/http.js";
+import type { SpendGate } from "../utils/covenant.js";
 import type { CreateWalletOptions, WalletData } from "../types.js";
 import { AgentWallet } from "./agent-wallet.js";
 
@@ -18,9 +19,11 @@ import { AgentWallet } from "./agent-wallet.js";
  */
 export class WalletModule {
   private readonly http: HttpClient;
+  private readonly spendGate?: SpendGate;
 
-  constructor(http: HttpClient) {
+  constructor(http: HttpClient, spendGate?: SpendGate) {
     this.http = http;
+    this.spendGate = spendGate;
   }
 
   // -------------------------------------------------------------------------
@@ -52,7 +55,7 @@ export class WalletModule {
    */
   async create(options: CreateWalletOptions): Promise<AgentWallet> {
     const data = await this.http.post<WalletData>("/wallets", options);
-    return new AgentWallet(data, this.http);
+    return new AgentWallet(data, this.http, this.spendGate);
   }
 
   /**
@@ -68,7 +71,7 @@ export class WalletModule {
    */
   async get(id: string): Promise<AgentWallet> {
     const data = await this.http.get<WalletData>(`/wallets/${id}`);
-    return new AgentWallet(data, this.http);
+    return new AgentWallet(data, this.http, this.spendGate);
   }
 
   /**
@@ -84,6 +87,6 @@ export class WalletModule {
    */
   async list(): Promise<AgentWallet[]> {
     const data = await this.http.get<WalletData[]>("/wallets");
-    return data.map((d) => new AgentWallet(d, this.http));
+    return data.map((d) => new AgentWallet(d, this.http, this.spendGate));
   }
 }

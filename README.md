@@ -94,6 +94,90 @@ services.services.forEach(s => console.log(s.name, s.baseUrl))
 
 ---
 
+## Covenant spend authorization (optional)
+
+Beside the server-side spending policy, the SDK can ask a [Covenant](https://github.com/open-covenant/covenant/blob/feat/orbserv-spend-authz/docs/spend-authorization.md) daemon to authorize each spend *before* it is signed. The daemon checks the caller's capability, a per-call cap, and the payer's budget, records the verdict in its audit chain, and returns approve or deny with a `decision_id`. No funds move — it is a decision, not a payment. The `decision_id` is forwarded to the orbserv API so a later settlement can be correlated back to the authorization.
+
+This is fully optional. Omit the `covenant` config and the SDK behaves exactly as before, relying only on the server-side policy guardrails.
+
+### Enable the daemon
+
+The Covenant operator opts in at boot:
+
+```bash
+# In the daemon environment
+export COVENANT_SPEND_AUTHZ_ENABLED=1
+
+# Grant the calling identity the capability
+covenant capabilities grant wallet.spend.authorize
+```
+
+Smoke-test the contract before pointing the SDK at it:
+
+```bash
+curl -sS -X POST http://127.0.0.1:8421/spend/authorize \
+  -H "Authorization: Bearer $COVENANT_TOKEN" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "provider": "orbserv",
+    "network": "eip155:8453",
+    "asset": "0x833589fCD6eDb6E08f4c7C32D4f71b54bdA02913",
+    "amount": "80000",
+    "per_call_cap": "100000",
+    "credits": 8,
+    "destination": "0xPayee"
+  }'
+```
+
+### Configure the SDK
+
+```typescript
+const orb = new OrbWallet({
+  apiKey: process.env.ORB_API_KEY!,
+  covenant: {
+    gatewayUrl: "http://127.0.0.1:8421",   // daemon base URL
+    token: process.env.COVENANT_TOKEN!,    // daemon bearer token
+    // perCallCap is an atomic decimal string; when omitted, the wallet
+    // policy's maxPerTx is used as the per-call cap instead.
+    perCallCap: "100000",
+  },
+})
+```
+
+With the gate enabled:
+
+- `wallet.send(...)` authorizes the transfer before submitting it.
+- `wallet.fetch(url)` probes the URL, and on a `402` it parses the x402 challenge, authorizes, then pays. Non-paid requests are returned untouched.
+
+```typescript
+import { OrbSpendDeniedError } from "@orbserv-labs/orb-wallet"
+
+try {
+  const tx = await wallet.send({ to: "0xPayee", amount: 0.08, token: "USDC", chain: "base" })
+  console.log("authorized + sent", tx.spendDecisionId, tx.txHash)
+} catch (err) {
+  if (err instanceof OrbSpendDeniedError) {
+    // Policy deny — abort and surface the reason to the user.
+    console.error("spend denied:", err.reason, "decision:", err.decisionId)
+  } else {
+    throw err
+  }
+}
+```
+
+The daemon is the authority. Set the wallet's own `policy.maxPerTx` to mirror `perCallCap` as a hard backstop, so a spend can never exceed the bound even if a call skips the pre-flight.
+
+### Local test checklist
+
+1. Start the daemon with `COVENANT_SPEND_AUTHZ_ENABLED=1`.
+2. Grant the capability: `covenant capabilities grant wallet.spend.authorize`.
+3. Verify the contract with the curl example above.
+4. Point the SDK at the daemon via the `covenant` config.
+5. Run a send within the cap (approve) and one above it (deny).
+6. Inspect the audit chain: `covenant audit recent` shows `spend_authorization_decided` rows.
+
+---
+
 ## Wallet management
 
 ```typescript
@@ -132,10 +216,11 @@ try {
 
 ### `new OrbWallet(options)`
 
-| Option    | Type     | Required | Description                                           |
-|-----------|----------|----------|-------------------------------------------------------|
-| `apiKey`  | `string` | Yes      | Your orbserv API key                                  |
-| `baseUrl` | `string` | No       | Override base URL (default: `https://api.orbserv.co/v1`) |
+| Option     | Type     | Required | Description                                           |
+|------------|----------|----------|-------------------------------------------------------|
+| `apiKey`   | `string` | Yes      | Your orbserv API key                                  |
+| `baseUrl`  | `string` | No       | Override base URL (default: `https://api.orbserv.co/v1`) |
+| `covenant` | `CovenantSpendAuthzConfig` | No | Enable the Covenant spend-authorization gate (see above) |
 
 ### `orb.wallet`
 
@@ -192,7 +277,9 @@ Add to `~/Library/Application Support/Claude/claude_desktop_config.json`:
       "args": ["-y", "@orbserv-labs/orb-wallet", "orb-wallet-mcp"],
       "env": {
         "ORB_API_KEY": "orb_your_api_key_here",
-        "ORB_BASE_URL": "https://api.orbserv.co/v1"
+        "ORB_BASE_URL": "https://api.orbserv.co/v1",
+        "COVENANT_GATEWAY_URL": "http://127.0.0.1:8421",
+        "COVENANT_TOKEN": "your_covenant_bearer_token"
       }
     }
   }

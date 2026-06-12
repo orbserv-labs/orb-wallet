@@ -6,8 +6,15 @@
  * can call in natural-language conversations.
  *
  * Environment variables:
- *   ORB_API_KEY   – required; your orbserv API key
- *   ORB_BASE_URL  – optional; defaults to https://api.orbserv.co/v1
+ *   ORB_API_KEY            – required; your orbserv API key
+ *   ORB_BASE_URL           – optional; defaults to https://api.orbserv.co/v1
+ *   COVENANT_GATEWAY_URL   – optional; Covenant daemon base URL (e.g. http://127.0.0.1:8421)
+ *   COVENANT_TOKEN         – optional; Covenant daemon bearer token
+ *   COVENANT_PROVIDER      – optional; provider tag recorded on the audit row (default "orbserv")
+ *   COVENANT_PER_CALL_CAP  – optional; atomic per-call cap override
+ *
+ * The Covenant spend-authorization gate is enabled only when both
+ * COVENANT_GATEWAY_URL and COVENANT_TOKEN are set.
  */
 
 import { Server } from '@modelcontextprotocol/sdk/server/index.js';
@@ -44,9 +51,22 @@ let _orb: OrbWallet | null = null;
 function getOrb(): OrbWallet {
   if (!process.env.ORB_API_KEY) throw new Error(NO_KEY_MSG);
   if (!_orb) {
+    // Enable the Covenant spend-authorization gate only when both the gateway
+    // URL and bearer token are present in the environment.
+    const covenant =
+      process.env.COVENANT_GATEWAY_URL && process.env.COVENANT_TOKEN
+        ? {
+            gatewayUrl: process.env.COVENANT_GATEWAY_URL,
+            token: process.env.COVENANT_TOKEN,
+            provider: process.env.COVENANT_PROVIDER,
+            perCallCap: process.env.COVENANT_PER_CALL_CAP,
+          }
+        : undefined;
+
     _orb = new OrbWallet({
       apiKey: process.env.ORB_API_KEY,
       baseUrl: process.env.ORB_BASE_URL ?? 'https://api.orbserv.co/v1',
+      covenant,
     });
   }
   return _orb;
