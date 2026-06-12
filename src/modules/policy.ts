@@ -1,4 +1,5 @@
 import type { HttpClient } from "../utils/http.js";
+import type { SpendGate } from "../utils/covenant.js";
 import type { PolicyData, UpdatePolicyOptions } from "../types.js";
 
 /**
@@ -16,10 +17,12 @@ import type { PolicyData, UpdatePolicyOptions } from "../types.js";
 export class PolicyModule {
   private readonly http: HttpClient;
   private readonly walletId: string;
+  private readonly spendGate?: SpendGate;
 
-  constructor(http: HttpClient, walletId: string) {
+  constructor(http: HttpClient, walletId: string, spendGate?: SpendGate) {
     this.http = http;
     this.walletId = walletId;
+    this.spendGate = spendGate;
   }
 
   // -------------------------------------------------------------------------
@@ -49,10 +52,14 @@ export class PolicyModule {
    * ```
    */
   async update(options: UpdatePolicyOptions): Promise<PolicyData> {
-    return this.http.patch<PolicyData>(
+    const data = await this.http.patch<PolicyData>(
       `/wallets/${this.walletId}/policy`,
       options
     );
+    // The Covenant gate caches the per-call cap derived from maxPerTx; a
+    // policy change must not keep authorizing against the stale bound.
+    this.spendGate?.invalidateCap(this.walletId);
+    return data;
   }
 
   /**

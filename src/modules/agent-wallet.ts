@@ -86,7 +86,7 @@ export class AgentWallet {
 
     this.http = http;
     this.spendGate = spendGate;
-    this.policy = new PolicyModule(http, data.id);
+    this.policy = new PolicyModule(http, data.id, spendGate);
     this.x402Module = new X402Module(http, spendGate);
   }
 

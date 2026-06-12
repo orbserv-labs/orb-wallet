@@ -143,6 +143,14 @@ export class SpendGate {
     private readonly http: HttpClient
   ) {}
 
+  /**
+   * Drop the cached per-call cap for a wallet so the next authorization
+   * re-reads the policy. Called after a policy update changes `maxPerTx`.
+   */
+  invalidateCap(walletId: string): void {
+    this.capCache.delete(walletId);
+  }
+
   private async perCallCap(walletId: string): Promise<string> {
     if (this.client.perCallCap) return this.client.perCallCap;
 
