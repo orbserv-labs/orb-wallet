@@ -96,7 +96,7 @@ services.services.forEach(s => console.log(s.name, s.baseUrl))
 
 ## Covenant spend authorization (optional)
 
-Beside the server-side spending policy, the SDK can ask a [Covenant](https://github.com/open-covenant/covenant/blob/feat/orbserv-spend-authz/docs/spend-authorization.md) daemon to authorize each spend *before* it is signed. The daemon checks the caller's capability, a per-call cap, and the payer's budget, records the verdict in its audit chain, and returns approve or deny with a `decision_id`. No funds move — it is a decision, not a payment. The `decision_id` is forwarded to the orbserv API so a later settlement can be correlated back to the authorization.
+Beside the server-side spending policy, the SDK can ask a [Covenant](https://github.com/open-covenant/covenant/blob/feat/spend-authorization/docs/spend-authorization.md) daemon to authorize each spend *before* it is signed. The daemon checks the caller's capability, a per-call cap, and the payer's budget, records the verdict in its audit chain, and returns approve or deny with a `decision_id`. No funds move — it is a decision, not a payment. The `decision_id` is forwarded to the orbserv API so a later settlement can be correlated back to the authorization.
 
 This is fully optional. Omit the `covenant` config and the SDK behaves exactly as before, relying only on the server-side policy guardrails.
 
@@ -166,6 +166,26 @@ try {
 ```
 
 The daemon is the authority. Set the wallet's own `policy.maxPerTx` to mirror `perCallCap` as a hard backstop, so a spend can never exceed the bound even if a call skips the pre-flight.
+
+### Settlement
+
+After a broadcast succeeds, the SDK closes the audit loop automatically with `POST /spend/settle`, joining the authorization (`decision_id`) to the on-chain transaction (`tx_sig`). The daemon does not reconstruct spend details from the decision id, so the SDK caches the authorization facts at authorize time and resends the full payload (`provider`, `network`, `asset`, `amount`, `credits`) with the transaction hash.
+
+Settlement is post-transaction accounting. Once the transaction has been broadcast, the payment is complete — a settlement failure is logged with the full spend facts (`decisionId`, `provider`, `network`, `asset`, `amount`, `credits`, `txHash`) and **never** rolls back, throws, or marks the payment failed. Use the logged facts and `CovenantSpendAuthzClient.settleSpend(decisionId, txHash)` to retry a failed settlement manually:
+
+```typescript
+import { CovenantSpendAuthzClient } from "@orbserv-labs/orb-wallet"
+
+const covenant = new CovenantSpendAuthzClient({
+  gatewayUrl: "http://127.0.0.1:8421",
+  token: process.env.COVENANT_TOKEN!,
+})
+
+// Retry settlement for a spend this client authorized earlier
+await covenant.settleSpend(decisionId, txHash)
+```
+
+A denied authorization always throws `OrbSpendDeniedError` **before** the transfer request is sent — a denied spend can never reach broadcast, so there is never anything to settle on a deny.
 
 ### Local test checklist
 

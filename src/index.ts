@@ -40,6 +40,7 @@ export { CovenantSpendAuthzClient, SpendGate } from "./utils/covenant.js";
 export type {
   SpendAuthorizeRequest,
   SpendAuthorization,
+  SpendSettleRequest,
 } from "./utils/covenant.js";
 
 // All public types
