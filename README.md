@@ -167,26 +167,6 @@ try {
 
 The daemon is the authority. Set the wallet's own `policy.maxPerTx` to mirror `perCallCap` as a hard backstop, so a spend can never exceed the bound even if a call skips the pre-flight.
 
-### Settlement
-
-After a broadcast succeeds, the SDK closes the audit loop automatically with `POST /spend/settle`, joining the authorization (`decision_id`) to the on-chain transaction (`tx_sig`). The daemon does not reconstruct spend details from the decision id, so the SDK caches the authorization facts at authorize time and resends the full payload (`provider`, `network`, `asset`, `amount`, `credits`) with the transaction hash.
-
-Settlement is post-transaction accounting. Once the transaction has been broadcast, the payment is complete — a settlement failure is logged with the full spend facts (`decisionId`, `provider`, `network`, `asset`, `amount`, `credits`, `txHash`) and **never** rolls back, throws, or marks the payment failed. Use the logged facts and `CovenantSpendAuthzClient.settleSpend(decisionId, txHash)` to retry a failed settlement manually:
-
-```typescript
-import { CovenantSpendAuthzClient } from "@orbserv-labs/orb-wallet"
-
-const covenant = new CovenantSpendAuthzClient({
-  gatewayUrl: "http://127.0.0.1:8421",
-  token: process.env.COVENANT_TOKEN!,
-})
-
-// Retry settlement for a spend this client authorized earlier
-await covenant.settleSpend(decisionId, txHash)
-```
-
-A denied authorization always throws `OrbSpendDeniedError` **before** the transfer request is sent — a denied spend can never reach broadcast, so there is never anything to settle on a deny.
-
 ### Local test checklist
 
 1. Start the daemon with `COVENANT_SPEND_AUTHZ_ENABLED=1`.

@@ -44,9 +44,9 @@
     "build:mcp": "tsc -p mcp/tsconfig.json",
     "dev": "tsc --watch",
     "lint": "tsc --noEmit",
-    "test": "npm run build && node --test \"test/**/*.test.mjs\"",
+    "test": "npm run build && node --test test/covenant.test.mjs",
     "prepublishOnly": "npm run lint && npm run build && npm run build:mcp",
-    "clean": "rm -rf dist dist-test mcp/dist"
+    "clean": "rm -rf dist mcp/dist"
   },
   "engines": {
     "node": ">=18.0.0"

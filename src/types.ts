@@ -246,6 +246,13 @@ export interface CovenantSpendAuthzConfig {
    * When omitted, the SDK falls back to the wallet policy's `maxPerTx`.
    */
   perCallCap?: string;
+  /**
+   * Automatic settlement retry attempts after a successful broadcast.
+   * Defaults to `3` (four total tries including the first).
+   */
+  settlementRetryAttempts?: number;
+  /** Delay in milliseconds between settlement retry attempts. Defaults to `100`. */
+  settlementRetryDelayMs?: number;
 }
 
 /** Options accepted by the `OrbWallet` constructor. */

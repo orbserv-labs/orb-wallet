@@ -1,6 +1,6 @@
 import type { HttpClient } from "../utils/http.js";
-import type { SpendGate } from "../utils/covenant.js";
-import { parseX402Challenge, txSigFromReceipt } from "../utils/x402-challenge.js";
+import type { SpendGate, SpendAuthorizationResult } from "../utils/covenant.js";
+import { parseX402Challenge } from "../utils/x402-challenge.js";
 import { OrbCovenantError } from "../utils/errors.js";
 import { toAtomicString } from "../utils/chain-assets.js";
 import type {
@@ -87,6 +87,7 @@ export class X402Module {
     init?: FetchOptions
   ): Promise<X402FetchResult> {
     let decisionId: string | undefined;
+    let authorization: SpendAuthorizationResult | undefined;
 
     // With a Covenant gate, preflight the spend client-side: probe the URL,
     // and only authorize + pay when the target actually demands payment.
@@ -119,13 +120,14 @@ export class X402Module {
         }
       }
 
-      decisionId = await this.spendGate.authorizeChallenge({
+      authorization = await this.spendGate.authorizeChallenge({
         walletId,
         network: challenge.network,
         asset: challenge.asset,
         atomicAmount: challenge.amount,
         destination: challenge.destination,
       });
+      decisionId = authorization.decisionId;
     }
 
     // Delegate to the backend proxy endpoint so the server can handle
@@ -146,22 +148,6 @@ export class X402Module {
       ...(decisionId ? { spendAuthorization: { decisionId } } : {}),
     });
 
-    // The payment already happened server-side; settlement is accounting and
-    // must never affect the result returned to the caller.
-    if (decisionId && this.spendGate) {
-      if (response.paymentReceipt) {
-        await this.spendGate.settleSafely(
-          decisionId,
-          txSigFromReceipt(response.paymentReceipt)
-        );
-      } else if (response.amountCharged !== undefined) {
-        console.warn(
-          "Covenant settlement skipped: x402 payment has no receipt",
-          { decisionId, walletId, url, amountCharged: response.amountCharged }
-        );
-      }
-    }
-
     // Re-construct a Response from the proxied result so callers get a
     // familiar interface.
     const proxiedResponse = new Response(response.body, {
@@ -169,11 +155,21 @@ export class X402Module {
       headers: response.headers,
     });
 
-    return {
+    const result = {
       response: proxiedResponse,
       paymentReceipt: response.paymentReceipt,
       amountCharged: response.amountCharged,
       spendDecisionId: response.spendDecisionId ?? decisionId,
     };
+
+    const txSig = response.paymentReceipt;
+    if (authorization && txSig && this.spendGate) {
+      await this.spendGate.settleAfterBroadcast(
+        authorization.decisionId,
+        txSig
+      );
+    }
+
+    return result;
   }
 }

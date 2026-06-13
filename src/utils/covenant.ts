@@ -13,6 +13,7 @@ import {
   toAtomicString,
 } from "./chain-assets.js";
 import { OrbCovenantError, OrbSpendDeniedError } from "./errors.js";
+import { logSettlementFailure } from "./covenant-logger.js";
 
 /** Request body for `POST /spend/authorize`, per the Covenant spec. */
 export interface SpendAuthorizeRequest {
@@ -32,28 +33,41 @@ export interface SpendAuthorizeRequest {
   destination?: string;
 }
 
-/**
- * Request body for `POST /spend/settle`.
- *
- * The daemon does not reconstruct spend details from `decision_id`; the
- * settlement must resend the full spend facts used during authorization plus
- * the on-chain transaction signature.
- */
+/** Request body for `POST /spend/settle`. */
 export interface SpendSettleRequest {
-  /** Decision id returned by the authorize call this settles. */
   decision_id: string;
-  /** Provider tag, identical to the authorize request. */
   provider: string;
-  /** CAIP-2 network, identical to the authorize request. */
   network: string;
-  /** Token contract / mint, identical to the authorize request. */
   asset: string;
-  /** Atomic amount as a decimal string, identical to the authorize request. */
   amount: string;
-  /** USD-pegged credits, identical to the authorize request. */
-  credits: number;
-  /** On-chain transaction hash / signature of the settled payment. */
+  credits: string;
   tx_sig: string;
+}
+
+/** Authorization facts preserved for settlement — must match authorize exactly. */
+export interface CovenantSettlementContext {
+  decisionId: string;
+  provider: string;
+  network: string;
+  asset: string;
+  amount: string;
+  credits: string;
+}
+
+/** Result of an approved authorization, including facts for later settlement. */
+export interface SpendAuthorizationResult {
+  decisionId: string;
+  context: CovenantSettlementContext;
+}
+
+/** A broadcast that succeeded but whose Covenant settlement is still pending. */
+export interface FailedSettlementRecord {
+  decisionId: string;
+  txHash: string;
+  context: CovenantSettlementContext;
+  lastError: string;
+  attempts: number;
+  failedAt: string;
 }
 
 /** Raw response from `POST /spend/authorize`. */
@@ -64,37 +78,29 @@ interface SpendAuthorizeResponse {
   reason?: string;
 }
 
-/** Result of an approved authorization. */
-export interface SpendAuthorization {
-  decisionId: string;
+/** Raw response from `POST /spend/settle`. */
+interface SpendSettleResponse {
+  kind?: string;
+  error?: string;
+}
+
+function delay(ms: number): Promise<void> {
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+function errorMessage(err: unknown): string {
+  return err instanceof Error ? err.message : String(err);
 }
 
 /**
- * Maximum number of authorization fact entries retained for settlement.
- * Entries are deleted once settled; the cap only matters for spends that are
- * authorized but never settle (denied broadcasts, crashes, abandoned flows).
- */
-const MAX_CACHED_FACTS = 200;
-
-/**
- * Client for the Covenant daemon's spend-authorization surface.
- *
- * Calls `POST {gatewayUrl}/spend/authorize` before a wallet signs, so the
- * daemon can check the caller's capability, the per-call cap, and the payer's
- * budget. No funds move; it is a decision, not a payment.
+ * Client for the Covenant daemon's spend-authorization and settlement
+ * surfaces.
  */
 export class CovenantSpendAuthzClient {
   private readonly gatewayUrl: string;
   private readonly token: string;
   readonly provider: string;
   readonly perCallCap?: string;
-
-  /**
-   * Spend facts of approved authorizations, keyed by decision id, retained so
-   * a later settlement can resend the full payload. Entries are removed once
-   * settled; insertion order doubles as eviction order when the cap is hit.
-   */
-  private readonly factsByDecision = new Map<string, SpendAuthorizeRequest>();
 
   constructor(config: CovenantSpendAuthzConfig) {
     this.gatewayUrl = config.gatewayUrl.replace(/\/$/, "");
@@ -103,11 +109,10 @@ export class CovenantSpendAuthzClient {
     this.perCallCap = config.perCallCap;
   }
 
-  /** POST a JSON body to the daemon and return the parsed JSON response. */
-  private async post<T extends { error?: string }>(
+  private async covenantFetch<T>(
     path: string,
-    payload: unknown
-  ): Promise<T> {
+    body: unknown
+  ): Promise<{ response: Response; parsed: T & { error?: string } }> {
     let response: Response;
     try {
       response = await fetch(`${this.gatewayUrl}${path}`, {
@@ -116,7 +121,7 @@ export class CovenantSpendAuthzClient {
           "Content-Type": "application/json",
           Authorization: `Bearer ${this.token}`,
         },
-        body: JSON.stringify(payload),
+        body: JSON.stringify(body),
       });
     } catch (err) {
       throw new OrbCovenantError(
@@ -126,9 +131,9 @@ export class CovenantSpendAuthzClient {
       );
     }
 
-    let body: T;
+    let parsed: T & { error?: string };
     try {
-      body = (await response.json()) as T;
+      parsed = (await response.json()) as T & { error?: string };
     } catch {
       throw new OrbCovenantError(
         `Covenant returned a non-JSON response (status ${response.status})`,
@@ -136,35 +141,25 @@ export class CovenantSpendAuthzClient {
       );
     }
 
-    // Transport / configuration problems come back as { error: "<message>" }.
-    if (!response.ok || body.error) {
+    if (!response.ok || parsed.error) {
       throw new OrbCovenantError(
-        body.error ?? `Covenant request failed (status ${response.status})`,
+        parsed.error ?? `Covenant request failed (status ${response.status})`,
         response.status,
-        body
+        parsed
       );
     }
 
-    return body;
-  }
-
-  /** Spend facts retained for a decision id, if this client authorized it. */
-  factsFor(decisionId: string): SpendAuthorizeRequest | undefined {
-    return this.factsByDecision.get(decisionId);
+    return { response, parsed };
   }
 
   /**
    * Ask the daemon to approve a spend.
    *
-   * On approval, the spend facts are cached against the returned decision id
-   * so {@link settleSpend} can later resend the full payload.
-   *
-   * @returns the {@link SpendAuthorization} carrying the `decisionId` on approve.
    * @throws {OrbSpendDeniedError} when the daemon denies the spend.
    * @throws {OrbCovenantError} on transport or configuration failure.
    */
-  async authorize(req: SpendAuthorizeRequest): Promise<SpendAuthorization> {
-    const body = await this.post<SpendAuthorizeResponse & { error?: string }>(
+  async authorize(req: SpendAuthorizeRequest): Promise<SpendAuthorizationResult> {
+    const { parsed: body } = await this.covenantFetch<SpendAuthorizeResponse>(
       "/spend/authorize",
       req
     );
@@ -177,77 +172,53 @@ export class CovenantSpendAuthzClient {
       );
     }
 
-    // A policy deny is approved:false, not an HTTP error.
     if (body.approved !== true) {
       throw new OrbSpendDeniedError(body.decision_id, body.reason);
     }
 
-    if (this.factsByDecision.size >= MAX_CACHED_FACTS) {
-      const oldest = this.factsByDecision.keys().next().value;
-      if (oldest !== undefined) this.factsByDecision.delete(oldest);
-    }
-    this.factsByDecision.set(body.decision_id, req);
-
-    return { decisionId: body.decision_id };
+    const credits = String(req.credits);
+    return {
+      decisionId: body.decision_id,
+      context: {
+        decisionId: body.decision_id,
+        provider: req.provider,
+        network: req.network,
+        asset: req.asset,
+        amount: req.amount,
+        credits,
+      },
+    };
   }
 
   /**
-   * Settle an authorized spend after the transaction landed on-chain.
+   * Record a completed on-chain spend against a prior authorization.
    *
-   * The daemon does not reconstruct facts from the decision id, so this
-   * resends the full spend payload cached during {@link authorize} plus the
-   * transaction signature. Settlement is post-transaction accounting: callers
-   * in the payment path must treat failures as non-fatal.
-   *
-   * @param decisionId - The decision id returned by the authorize call.
-   * @param txSig - On-chain transaction hash / signature.
-   * @throws {OrbCovenantError} when the facts are unknown to this client or
-   *   the daemon call fails.
+   * @throws {OrbCovenantError} on transport or configuration failure.
    */
-  async settleSpend(decisionId: string, txSig: string): Promise<void> {
-    const facts = this.factsByDecision.get(decisionId);
-    if (!facts) {
-      throw new OrbCovenantError(
-        `No cached authorization facts for decision ${decisionId}; ` +
-          "settlement requires the full spend payload from the authorize call"
-      );
-    }
-
-    const payload: SpendSettleRequest = {
-      decision_id: decisionId,
-      provider: facts.provider,
-      network: facts.network,
-      asset: facts.asset,
-      amount: facts.amount,
-      credits: facts.credits,
-      tx_sig: txSig,
-    };
-
-    await this.post<{ error?: string }>("/spend/settle", payload);
-    this.factsByDecision.delete(decisionId);
+  async settle(req: SpendSettleRequest): Promise<void> {
+    await this.covenantFetch<SpendSettleResponse>("/spend/settle", req);
   }
 }
 
 /**
  * Wraps a {@link CovenantSpendAuthzClient} with the SDK-side glue both spend
- * paths share: resolving the per-call cap (config override, else the wallet's
- * `maxPerTx` policy) and translating SDK chains/tokens or parsed x402
- * challenges into the daemon's request shape.
+ * paths share: authorization, settlement-context storage, post-broadcast
+ * settlement with retries, and manual retry of failed settlements.
  */
 export class SpendGate {
   private readonly capCache = new Map<string, string>();
+  private readonly contextStore = new Map<string, CovenantSettlementContext>();
+  private readonly failedSettlements = new Map<string, FailedSettlementRecord>();
+  private readonly retryAttempts: number;
+  private readonly retryDelayMs: number;
 
   constructor(
     private readonly client: CovenantSpendAuthzClient,
-    private readonly http: HttpClient
-  ) {}
-
-  /**
-   * Drop the cached per-call cap for a wallet so the next authorization
-   * re-reads the policy. Called after a policy update changes `maxPerTx`.
-   */
-  invalidateCap(walletId: string): void {
-    this.capCache.delete(walletId);
+    private readonly http: HttpClient,
+    config?: CovenantSpendAuthzConfig
+  ) {
+    this.retryAttempts = config?.settlementRetryAttempts ?? 3;
+    this.retryDelayMs = config?.settlementRetryDelayMs ?? 100;
   }
 
   private async perCallCap(walletId: string): Promise<string> {
@@ -277,6 +248,25 @@ export class SpendGate {
     return cap;
   }
 
+  private storeAuthorization(result: SpendAuthorizationResult): void {
+    this.contextStore.set(result.decisionId, result.context);
+  }
+
+  private buildSettleRequest(
+    context: CovenantSettlementContext,
+    txHash: string
+  ): SpendSettleRequest {
+    return {
+      decision_id: context.decisionId,
+      provider: context.provider,
+      network: context.network,
+      asset: context.asset,
+      amount: context.amount,
+      credits: context.credits,
+      tx_sig: txHash,
+    };
+  }
+
   /** Authorize a direct transfer described by SDK chain/token/amount. */
   async authorizeTransfer(params: {
     walletId: string;
@@ -284,8 +274,8 @@ export class SpendGate {
     token: Token;
     amount: number;
     destination?: string;
-  }): Promise<string> {
-    const { decisionId } = await this.client.authorize({
+  }): Promise<SpendAuthorizationResult> {
+    const result = await this.client.authorize({
       provider: this.client.provider,
       network: CHAIN_TO_CAIP2[params.chain],
       asset: assetFor(params.chain, params.token),
@@ -294,7 +284,8 @@ export class SpendGate {
       credits: creditsFor(params.amount, params.token),
       destination: params.destination,
     });
-    return decisionId;
+    this.storeAuthorization(result);
+    return result;
   }
 
   /** Authorize a spend described directly by a parsed x402 challenge. */
@@ -304,8 +295,8 @@ export class SpendGate {
     asset: string;
     atomicAmount: string;
     destination?: string;
-  }): Promise<string> {
-    const { decisionId } = await this.client.authorize({
+  }): Promise<SpendAuthorizationResult> {
+    const result = await this.client.authorize({
       provider: this.client.provider,
       network: params.network,
       asset: params.asset,
@@ -314,42 +305,107 @@ export class SpendGate {
       credits: creditsFromAtomicUsdc(params.atomicAmount),
       destination: params.destination,
     });
-    return decisionId;
+    this.storeAuthorization(result);
+    return result;
   }
 
   /**
-   * Settle an authorized spend. Throws on failure; use {@link settleSafely}
-   * from payment paths where settlement must never affect the tx result.
+   * Settle a prior authorization using the stored authorization facts.
+   * Does not reauthorize or rebroadcast.
    */
-  async settle(decisionId: string, txSig: string): Promise<void> {
-    await this.client.settleSpend(decisionId, txSig);
-  }
-
-  /**
-   * Settle an authorized spend without ever throwing.
-   *
-   * Settlement is post-transaction accounting: once the payment broadcast
-   * succeeded, a settlement failure must not roll back, throw, or mark the
-   * payment failed. Failures are logged with the full spend facts so they can
-   * be retried later via {@link settle}.
-   */
-  async settleSafely(decisionId: string, txSig: string): Promise<void> {
-    // Capture facts before settling: a successful settle evicts them, and a
-    // failed one needs them for the structured log either way.
-    const facts = this.client.factsFor(decisionId);
-    try {
-      await this.client.settleSpend(decisionId, txSig);
-    } catch (err) {
-      console.warn("Failed to settle Covenant authorization", {
-        decisionId,
-        provider: facts?.provider,
-        network: facts?.network,
-        asset: facts?.asset,
-        amount: facts?.amount,
-        credits: facts?.credits,
-        txHash: txSig,
-        error: (err as Error).message,
-      });
+  async settleSpend(decisionId: string, txHash: string): Promise<void> {
+    const context = this.contextStore.get(decisionId);
+    if (!context) {
+      throw new OrbCovenantError(
+        `No settlement context for decision ${decisionId}`
+      );
     }
+    await this.client.settle(this.buildSettleRequest(context, txHash));
+    this.failedSettlements.delete(decisionId);
+  }
+
+  /**
+   * Post-broadcast settlement with automatic retries. Failures are logged and
+   * recorded for manual retry; they never affect the already-successful payment.
+   */
+  async settleAfterBroadcast(
+    decisionId: string,
+    txHash: string
+  ): Promise<void> {
+    const context = this.contextStore.get(decisionId);
+    if (!context) return;
+
+    let lastErr: unknown;
+    const maxAttempts = this.retryAttempts + 1;
+
+    for (let attempt = 1; attempt <= maxAttempts; attempt++) {
+      try {
+        await this.settleSpend(decisionId, txHash);
+        return;
+      } catch (err) {
+        lastErr = err;
+        if (attempt < maxAttempts) {
+          await delay(this.retryDelayMs);
+        }
+      }
+    }
+
+    const record: FailedSettlementRecord = {
+      decisionId,
+      txHash,
+      context,
+      lastError: errorMessage(lastErr),
+      attempts: maxAttempts,
+      failedAt: new Date().toISOString(),
+    };
+    this.failedSettlements.set(decisionId, record);
+
+    logSettlementFailure({
+      ...context,
+      txHash,
+      error: lastErr,
+      attempts: maxAttempts,
+    });
+  }
+
+  /** List settlements that failed after automatic retries. */
+  listFailedSettlements(): FailedSettlementRecord[] {
+    return [...this.failedSettlements.values()];
+  }
+
+  /**
+   * Retry settlement for a specific failed decision. Does not reauthorize or
+   * rebroadcast.
+   *
+   * @returns true when settlement succeeds.
+   */
+  async retryFailedSettlement(decisionId: string): Promise<boolean> {
+    const record = this.failedSettlements.get(decisionId);
+    if (!record) return false;
+    try {
+      await this.settleSpend(decisionId, record.txHash);
+      return true;
+    } catch {
+      return false;
+    }
+  }
+
+  /**
+   * Retry the most recently recorded failed settlement.
+   *
+   * @returns true when settlement succeeds.
+   */
+  async retryLatestFailedSettlement(): Promise<boolean> {
+    const records = this.listFailedSettlements();
+    if (records.length === 0) return false;
+    const latest = records.reduce((a, b) =>
+      a.failedAt >= b.failedAt ? a : b
+    );
+    return this.retryFailedSettlement(latest.decisionId);
+  }
+
+  /** Invalidate cached per-call cap after a policy update. */
+  invalidateCap(walletId: string): void {
+    this.capCache.delete(walletId);
   }
 }

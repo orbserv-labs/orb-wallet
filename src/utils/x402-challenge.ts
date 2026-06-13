@@ -108,26 +108,3 @@ export async function parseX402Challenge(
     destination: chosen.payTo,
   };
 }
-
-/**
- * Extract the on-chain transaction signature from an x402 payment receipt.
- *
- * Receipts are documented as base64-encoded JSON carrying a `txHash`; some
- * servers also use `transaction` or `tx_sig`. When the receipt cannot be
- * decoded, the raw receipt string itself is returned so the settlement still
- * carries a correlatable value.
- */
-export function txSigFromReceipt(receipt: string): string {
-  try {
-    const decoded = decodeBase64Json(receipt) as {
-      txHash?: string;
-      transaction?: string;
-      tx_sig?: string;
-    };
-    const sig = decoded?.txHash ?? decoded?.transaction ?? decoded?.tx_sig;
-    if (typeof sig === "string" && sig.length > 0) return sig;
-  } catch {
-    // Not base64 JSON — fall through to the raw receipt.
-  }
-  return receipt;
-}

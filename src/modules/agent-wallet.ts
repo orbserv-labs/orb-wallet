@@ -1,5 +1,5 @@
 import type { HttpClient } from "../utils/http.js";
-import type { SpendGate } from "../utils/covenant.js";
+import type { SpendGate, SpendAuthorizationResult } from "../utils/covenant.js";
 import type {
   WalletData,
   ChainAddress,
@@ -104,11 +104,8 @@ export class AgentWallet {
    * @remarks
    * When the SDK is constructed with a `covenant` config, this method calls the
    * Covenant daemon's `POST /spend/authorize` before submitting the transfer.
-   * A deny throws {@link OrbSpendDeniedError} and the transfer is never
-   * submitted; an approval forwards the `decisionId` to the API for audit
-   * correlation. After a successful broadcast, the spend is settled via
-   * `POST /spend/settle`; settlement is post-transaction accounting and a
-   * settlement failure never affects the returned transaction.
+   * A deny throws {@link OrbSpendDeniedError}; an approval forwards the
+   * `decisionId` to the API for audit correlation.
    *
    * @example
    * ```typescript
@@ -124,42 +121,34 @@ export class AgentWallet {
   async send(options: SendOptions): Promise<Transaction> {
     const token = options.token ?? "USDC";
 
-    // A Covenant deny throws here, before the transfer request is ever sent;
-    // a denied spend can never reach broadcast.
     let decisionId = options.spendDecisionId;
+    let authorization: SpendAuthorizationResult | undefined;
+
     if (decisionId === undefined && this.spendGate) {
-      decisionId = await this.spendGate.authorizeTransfer({
+      authorization = await this.spendGate.authorizeTransfer({
         walletId: this.id,
         chain: options.chain,
         token,
         amount: options.amount,
         destination: options.to,
       });
+      decisionId = authorization.decisionId;
     }
 
-    const tx = await this.http.post<Transaction>(
-      `/wallets/${this.id}/send`,
-      {
-        to: options.to,
-        amount: options.amount,
-        token,
-        chain: options.chain,
-        privacy: options.privacy ?? false,
-        ...(decisionId ? { spendAuthorization: { decisionId } } : {}),
-      }
-    );
+    const tx = await this.http.post<Transaction>(`/wallets/${this.id}/send`, {
+      to: options.to,
+      amount: options.amount,
+      token,
+      chain: options.chain,
+      privacy: options.privacy ?? false,
+      ...(decisionId ? { spendAuthorization: { decisionId } } : {}),
+    });
 
-    // The payment is complete once the broadcast succeeded; settlement is
-    // accounting and must never affect the returned transaction.
-    if (decisionId && this.spendGate) {
-      if (tx.txHash) {
-        await this.spendGate.settleSafely(decisionId, tx.txHash);
-      } else {
-        console.warn(
-          "Covenant settlement skipped: transaction has no hash yet",
-          { decisionId, walletId: this.id, transactionId: tx.id }
-        );
-      }
+    if (authorization && tx.txHash && this.spendGate) {
+      await this.spendGate.settleAfterBroadcast(
+        authorization.decisionId,
+        tx.txHash
+      );
     }
 
     return tx;

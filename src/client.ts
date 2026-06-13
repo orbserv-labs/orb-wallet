@@ -44,6 +44,12 @@ export class OrbWallet {
    */
   readonly x402: X402Module;
 
+  /**
+   * Covenant spend gate, when configured. Exposes settlement retry helpers
+   * for operations that succeeded on-chain but failed to settle.
+   */
+  readonly covenant?: SpendGate;
+
   private readonly http: HttpClient;
 
   /**
@@ -72,11 +78,13 @@ export class OrbWallet {
     const spendGate = options.covenant
       ? new SpendGate(
           new CovenantSpendAuthzClient(options.covenant),
-          this.http
+          this.http,
+          options.covenant
         )
       : undefined;
 
     this.wallet = new WalletModule(this.http, spendGate);
     this.x402 = new X402Module(this.http, spendGate);
+    this.covenant = spendGate;
   }
 }

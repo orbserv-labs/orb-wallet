@@ -17,6 +17,10 @@ import {
   OrbSpendDeniedError,
 } from "../dist/utils/errors.js";
 import {
+  setCovenantSettlementLogger,
+  resetCovenantSettlementLogger,
+} from "../dist/utils/covenant-logger.js";
+import {
   toAtomicString,
   creditsFor,
   creditsFromAtomicUsdc,
@@ -100,6 +104,7 @@ api.server = createServer(async (req, res) => {
       status: "confirmed",
       privacy: body.privacy,
       createdAt: "2026-06-12T00:00:00Z",
+      txHash: "0xtxhash_approved",
       spendDecisionId: body.spendAuthorization?.decisionId,
     });
   }
@@ -122,19 +127,27 @@ api.server = createServer(async (req, res) => {
 const daemon = {
   server: null,
   url: "",
-  // mutable per-test state
-  response: { status: 200, body: {} },
-  requests: [],
+  authorizeResponse: { status: 200, body: {} },
+  settleResponse: { status: 200, body: { kind: "spend_settled" } },
+  authorizeRequests: [],
+  settleRequests: [],
 };
 
 daemon.server = createServer(async (req, res) => {
   const body = await readBody(req);
   if (req.method === "POST" && req.url === "/spend/authorize") {
-    daemon.requests.push({ headers: req.headers, body });
-    res.writeHead(daemon.response.status, {
+    daemon.authorizeRequests.push({ headers: req.headers, body });
+    res.writeHead(daemon.authorizeResponse.status, {
       "Content-Type": "application/json",
     });
-    return res.end(JSON.stringify(daemon.response.body));
+    return res.end(JSON.stringify(daemon.authorizeResponse.body));
+  }
+  if (req.method === "POST" && req.url === "/spend/settle") {
+    daemon.settleRequests.push({ headers: req.headers, body });
+    res.writeHead(daemon.settleResponse.status, {
+      "Content-Type": "application/json",
+    });
+    return res.end(JSON.stringify(daemon.settleResponse.body));
   }
   res.writeHead(404).end();
 });
@@ -183,6 +196,8 @@ function makeOrb(covenantOverrides = {}) {
     covenant: {
       gatewayUrl: daemon.url,
       token: "operator-token",
+      settlementRetryAttempts: 0,
+      settlementRetryDelayMs: 0,
       ...covenantOverrides,
     },
   });
@@ -205,8 +220,11 @@ beforeEach(() => {
   api.policyHits = 0;
   api.sendBodies = [];
   api.x402Bodies = [];
-  daemon.response = APPROVED;
-  daemon.requests = [];
+  daemon.authorizeResponse = APPROVED;
+  daemon.settleResponse = { status: 200, body: { kind: "spend_settled" } };
+  daemon.authorizeRequests = [];
+  daemon.settleRequests = [];
+  resetCovenantSettlementLogger();
   x402svc.mode = "challenge";
   x402svc.challenge = {
     x402Version: 2,
@@ -267,8 +285,8 @@ describe("AgentWallet.send() with Covenant gate", () => {
     });
 
     // Daemon saw exactly one authorize call with the Covenant request shape.
-    assert.equal(daemon.requests.length, 1);
-    const { headers, body } = daemon.requests[0];
+    assert.equal(daemon.authorizeRequests.length, 1);
+    const { headers, body } = daemon.authorizeRequests[0];
     assert.equal(headers.authorization, "Bearer operator-token");
     assert.deepEqual(body, {
       provider: "orbserv",
@@ -286,10 +304,22 @@ describe("AgentWallet.send() with Covenant gate", () => {
       decisionId: "dec_ok_1",
     });
     assert.equal(tx.spendDecisionId, "dec_ok_1");
+
+    // Post-broadcast settlement uses the exact authorization facts.
+    assert.equal(daemon.settleRequests.length, 1);
+    assert.deepEqual(daemon.settleRequests[0].body, {
+      decision_id: "dec_ok_1",
+      provider: "orbserv",
+      network: CHAIN_TO_CAIP2.base,
+      asset: USDC_ADDRESS.base,
+      amount: "80000",
+      credits: "8",
+      tx_sig: "0xtxhash_approved",
+    });
   });
 
   test("deny: throws OrbSpendDeniedError and never hits the API", async () => {
-    daemon.response = {
+    daemon.authorizeResponse = {
       status: 200,
       body: {
         kind: "spend.decision",
@@ -314,7 +344,7 @@ describe("AgentWallet.send() with Covenant gate", () => {
   });
 
   test("daemon error body: throws OrbCovenantError, API untouched", async () => {
-    daemon.response = { status: 500, body: { error: "capability expired" } };
+    daemon.authorizeResponse = { status: 500, body: { error: "capability expired" } };
     const orb = makeOrb({ perCallCap: "1000000" });
     const wallet = await orb.wallet.get(WALLET_ID);
 
@@ -349,7 +379,7 @@ describe("AgentWallet.send() with Covenant gate", () => {
   });
 
   test("malformed approval (missing decision_id): throws OrbCovenantError", async () => {
-    daemon.response = { status: 200, body: { approved: true } };
+    daemon.authorizeResponse = { status: 200, body: { approved: true } };
     const orb = makeOrb({ perCallCap: "1000000" });
     const wallet = await orb.wallet.get(WALLET_ID);
 
@@ -371,7 +401,7 @@ describe("AgentWallet.send() with Covenant gate", () => {
       spendDecisionId: "dec_external_9",
     });
 
-    assert.equal(daemon.requests.length, 0);
+    assert.equal(daemon.authorizeRequests.length, 0);
     assert.deepEqual(api.sendBodies[0].spendAuthorization, {
       decisionId: "dec_external_9",
     });
@@ -383,7 +413,7 @@ describe("AgentWallet.send() with Covenant gate", () => {
 
     await wallet.send({ to: "0xR", amount: 1, token: "USDC", chain: "base" });
 
-    assert.equal(daemon.requests.length, 0);
+    assert.equal(daemon.authorizeRequests.length, 0);
     assert.equal(api.sendBodies.length, 1);
     assert.equal(api.sendBodies[0].spendAuthorization, undefined);
   });
@@ -410,8 +440,8 @@ describe("per-call cap fallback to wallet policy", () => {
     await wallet.send({ to: "0xR", amount: 1, token: "USDC", chain: "base" });
     await wallet.send({ to: "0xR", amount: 2, token: "USDC", chain: "base" });
 
-    assert.equal(daemon.requests[0].body.per_call_cap, "10000000"); // 10 USDC atomic
-    assert.equal(daemon.requests[1].body.per_call_cap, "10000000");
+    assert.equal(daemon.authorizeRequests[0].body.per_call_cap, "10000000"); // 10 USDC atomic
+    assert.equal(daemon.authorizeRequests[1].body.per_call_cap, "10000000");
     assert.equal(api.policyHits, 1, "policy endpoint should be cached after first read");
   });
 
@@ -429,13 +459,13 @@ describe("per-call cap fallback to wallet policy", () => {
     const wallet = await orb.wallet.get(WALLET_ID);
 
     await wallet.send({ to: "0xR", amount: 1, token: "USDC", chain: "base" });
-    assert.equal(daemon.requests[0].body.per_call_cap, "10000000");
+    assert.equal(daemon.authorizeRequests[0].body.per_call_cap, "10000000");
 
     await wallet.policy.update({ maxPerTx: 2 });
 
     await wallet.send({ to: "0xR", amount: 1, token: "USDC", chain: "base" });
     assert.equal(
-      daemon.requests[1].body.per_call_cap,
+      daemon.authorizeRequests[1].body.per_call_cap,
       "2000000",
       "second send must authorize against the updated maxPerTx"
     );
@@ -454,7 +484,7 @@ describe("per-call cap fallback to wallet policy", () => {
         return true;
       }
     );
-    assert.equal(daemon.requests.length, 0);
+    assert.equal(daemon.authorizeRequests.length, 0);
     assert.equal(api.sendBodies.length, 0);
   });
 
@@ -489,8 +519,8 @@ describe("wallet.fetch() (x402) with Covenant gate", () => {
 
     const result = await wallet.fetch(`${x402svc.url}/paid-endpoint`);
 
-    assert.equal(daemon.requests.length, 1);
-    const { body } = daemon.requests[0];
+    assert.equal(daemon.authorizeRequests.length, 1);
+    const { body } = daemon.authorizeRequests[0];
     assert.equal(body.network, "eip155:8453");
     assert.equal(body.asset, USDC_ADDRESS.base);
     assert.equal(body.amount, "80000");
@@ -505,6 +535,10 @@ describe("wallet.fetch() (x402) with Covenant gate", () => {
     assert.equal(result.spendDecisionId, "dec_ok_1");
     assert.equal(result.paymentReceipt, "receipt-abc");
     assert.equal(result.response.status, 200);
+
+    assert.equal(daemon.settleRequests.length, 1);
+    assert.equal(daemon.settleRequests[0].body.tx_sig, "receipt-abc");
+    assert.equal(daemon.settleRequests[0].body.decision_id, "dec_ok_1");
   });
 
   test("no payment required: returns probe response, daemon and backend untouched", async () => {
@@ -518,7 +552,7 @@ describe("wallet.fetch() (x402) with Covenant gate", () => {
     assert.deepEqual(await result.response.json(), {
       data: "no payment needed",
     });
-    assert.equal(daemon.requests.length, 0);
+    assert.equal(daemon.authorizeRequests.length, 0);
     assert.equal(api.x402Bodies.length, 0);
   });
 
@@ -534,12 +568,12 @@ describe("wallet.fetch() (x402) with Covenant gate", () => {
         return true;
       }
     );
-    assert.equal(daemon.requests.length, 0, "must abort before authorize");
+    assert.equal(daemon.authorizeRequests.length, 0, "must abort before authorize");
     assert.equal(api.x402Bodies.length, 0, "must abort before payment");
   });
 
   test("denied x402 spend: throws, backend never called", async () => {
-    daemon.response = {
+    daemon.authorizeResponse = {
       status: 200,
       body: { approved: false, decision_id: "dec_deny_2", reason: "budget_exhausted" },
     };
@@ -578,7 +612,7 @@ describe("wallet.fetch() (x402) with Covenant gate", () => {
 
     await wallet.fetch(`${x402svc.url}/paid-endpoint`, { chain: "arbitrum" });
 
-    const { body } = daemon.requests[0];
+    const { body } = daemon.authorizeRequests[0];
     assert.equal(body.network, "eip155:42161");
     assert.equal(body.asset, USDC_ADDRESS.arbitrum);
     assert.equal(body.amount, "90000");
@@ -594,6 +628,184 @@ describe("wallet.fetch() (x402) with Covenant gate", () => {
       wallet.fetch(`${x402svc.url}/paid-endpoint`),
       /could not parse an x402 payment challenge/
     );
-    assert.equal(daemon.requests.length, 0);
+    assert.equal(daemon.authorizeRequests.length, 0);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// post-broadcast settlement
+// ---------------------------------------------------------------------------
+
+describe("Covenant spend settlement", () => {
+  test("settlement failure: broadcast succeeds, tx returned, failure logged", async () => {
+    const failures = [];
+    setCovenantSettlementLogger((log) => failures.push(log));
+
+    daemon.settleResponse = { status: 500, body: { error: "settlement offline" } };
+    const orb = makeOrb({ perCallCap: "1000000", settlementRetryAttempts: 0 });
+    const wallet = await orb.wallet.get(WALLET_ID);
+
+    const tx = await wallet.send({
+      to: "0xRecipient",
+      amount: 0.08,
+      token: "USDC",
+      chain: "base",
+    });
+
+    assert.equal(tx.txHash, "0xtxhash_approved");
+    assert.equal(tx.spendDecisionId, "dec_ok_1");
+    assert.equal(daemon.settleRequests.length, 1);
+    assert.equal(failures.length, 1);
+    assert.deepEqual(
+      {
+        decisionId: failures[0].decisionId,
+        provider: failures[0].provider,
+        network: failures[0].network,
+        asset: failures[0].asset,
+        amount: failures[0].amount,
+        credits: failures[0].credits,
+        txHash: failures[0].txHash,
+      },
+      {
+        decisionId: "dec_ok_1",
+        provider: "orbserv",
+        network: CHAIN_TO_CAIP2.base,
+        asset: USDC_ADDRESS.base,
+        amount: "80000",
+        credits: "8",
+        txHash: "0xtxhash_approved",
+      }
+    );
+    assert.equal(orb.covenant.listFailedSettlements().length, 1);
+  });
+
+  test("automatic retry: retries settlement without rebroadcast or reauthorize", async () => {
+    let settleCalls = 0;
+    const originalSettle = daemon.settleResponse;
+    daemon.server.removeAllListeners("request");
+    daemon.server.on("request", async (req, res) => {
+      const body = await readBody(req);
+      if (req.method === "POST" && req.url === "/spend/authorize") {
+        daemon.authorizeRequests.push({ headers: req.headers, body });
+        res.writeHead(daemon.authorizeResponse.status, {
+          "Content-Type": "application/json",
+        });
+        return res.end(JSON.stringify(daemon.authorizeResponse.body));
+      }
+      if (req.method === "POST" && req.url === "/spend/settle") {
+        settleCalls++;
+        daemon.settleRequests.push({ headers: req.headers, body });
+        if (settleCalls < 2) {
+          res.writeHead(500, { "Content-Type": "application/json" });
+          return res.end(JSON.stringify({ error: "transient" }));
+        }
+        res.writeHead(200, { "Content-Type": "application/json" });
+        return res.end(JSON.stringify({ kind: "spend_settled" }));
+      }
+      res.writeHead(404).end();
+    });
+
+    const orb = makeOrb({
+      perCallCap: "1000000",
+      settlementRetryAttempts: 2,
+      settlementRetryDelayMs: 0,
+    });
+    const wallet = await orb.wallet.get(WALLET_ID);
+
+    const tx = await wallet.send({
+      to: "0xRecipient",
+      amount: 0.08,
+      token: "USDC",
+      chain: "base",
+    });
+
+    assert.equal(tx.txHash, "0xtxhash_approved");
+    assert.equal(settleCalls, 2, "must retry settlement only");
+    assert.equal(api.sendBodies.length, 1, "must not rebroadcast");
+    assert.equal(daemon.authorizeRequests.length, 1, "must not reauthorize");
+    assert.equal(orb.covenant.listFailedSettlements().length, 0);
+
+    daemon.server.removeAllListeners("request");
+    daemon.server.on("request", async (req, res) => {
+      const body = await readBody(req);
+      if (req.method === "POST" && req.url === "/spend/authorize") {
+        daemon.authorizeRequests.push({ headers: req.headers, body });
+        res.writeHead(daemon.authorizeResponse.status, {
+          "Content-Type": "application/json",
+        });
+        return res.end(JSON.stringify(daemon.authorizeResponse.body));
+      }
+      if (req.method === "POST" && req.url === "/spend/settle") {
+        daemon.settleRequests.push({ headers: req.headers, body });
+        res.writeHead(daemon.settleResponse.status, {
+          "Content-Type": "application/json",
+        });
+        return res.end(JSON.stringify(daemon.settleResponse.body));
+      }
+      res.writeHead(404).end();
+    });
+    daemon.settleResponse = originalSettle;
+  });
+
+  test("manual retry: failed settlement can be retried later without rebroadcast", async () => {
+    daemon.settleResponse = { status: 500, body: { error: "settlement offline" } };
+    const orb = makeOrb({ perCallCap: "1000000", settlementRetryAttempts: 0 });
+    const wallet = await orb.wallet.get(WALLET_ID);
+
+    const tx = await wallet.send({
+      to: "0xRecipient",
+      amount: 0.08,
+      token: "USDC",
+      chain: "base",
+    });
+    assert.equal(tx.txHash, "0xtxhash_approved");
+    assert.equal(orb.covenant.listFailedSettlements().length, 1);
+
+    const sendCountBefore = api.sendBodies.length;
+    const authorizeCountBefore = daemon.authorizeRequests.length;
+    const settleCountBefore = daemon.settleRequests.length;
+
+    daemon.settleResponse = { status: 200, body: { kind: "spend_settled" } };
+    const ok = await orb.covenant.retryLatestFailedSettlement();
+    assert.equal(ok, true);
+    assert.equal(orb.covenant.listFailedSettlements().length, 0);
+    assert.equal(api.sendBodies.length, sendCountBefore, "no rebroadcast");
+    assert.equal(
+      daemon.authorizeRequests.length,
+      authorizeCountBefore,
+      "no reauthorize"
+    );
+    assert.equal(daemon.settleRequests.length, settleCountBefore + 1);
+    assert.deepEqual(daemon.settleRequests.at(-1).body, {
+      decision_id: "dec_ok_1",
+      provider: "orbserv",
+      network: CHAIN_TO_CAIP2.base,
+      asset: USDC_ADDRESS.base,
+      amount: "80000",
+      credits: "8",
+      tx_sig: "0xtxhash_approved",
+    });
+  });
+
+  test("denied authorization never reaches broadcast or settlement", async () => {
+    daemon.authorizeResponse = {
+      status: 200,
+      body: {
+        kind: "spend.decision",
+        approved: false,
+        decision_id: "dec_deny_settle",
+        reason: "denied",
+      },
+    };
+    const orb = makeOrb({ perCallCap: "1000" });
+    const wallet = await orb.wallet.get(WALLET_ID);
+
+    await assert.rejects(
+      wallet.send({ to: "0xR", amount: 5, token: "USDC", chain: "base" }),
+      OrbSpendDeniedError
+    );
+
+    assert.equal(api.sendBodies.length, 0, "broadcast must not run");
+    assert.equal(daemon.settleRequests.length, 0, "settlement must not run");
   });
 });

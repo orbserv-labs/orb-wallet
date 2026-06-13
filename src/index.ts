@@ -39,9 +39,18 @@ export { HttpClient } from "./utils/http.js";
 export { CovenantSpendAuthzClient, SpendGate } from "./utils/covenant.js";
 export type {
   SpendAuthorizeRequest,
-  SpendAuthorization,
+  SpendAuthorizationResult,
   SpendSettleRequest,
+  CovenantSettlementContext,
+  FailedSettlementRecord,
 } from "./utils/covenant.js";
+
+export {
+  setCovenantSettlementLogger,
+  resetCovenantSettlementLogger,
+  logSettlementFailure,
+} from "./utils/covenant-logger.js";
+export type { CovenantSettlementFailureLog } from "./utils/covenant-logger.js";
 
 // All public types
 export type {
