@@ -140,7 +140,7 @@ curl -sS -X POST http://localhost:<COVENANT_PORT>/spend/authorize \
   -d '{
     "provider": "orbserv",
     "network": "eip155:8453",
-    "asset": "0xYOUR_TOKEN_CONTRACT_ADDRESS",
+    "asset": "0x833589fCD6eDb6E08f4c7C32D4f71b54bdA02913",
     "amount": "80000",
     "per_call_cap": "100000",
     "credits": 8,
@@ -484,7 +484,7 @@ logSettlementFailure({
   decisionId: "dec_ok_1",
   provider: "orbserv",
   network: "eip155:8453",
-  asset: "0xYOUR_TOKEN_CONTRACT_ADDRESS",
+  asset: "0x833589fCD6eDb6E08f4c7C32D4f71b54bdA02913",
   amount: "80000",
   credits: "8",
   txHash: "0xtxhash",

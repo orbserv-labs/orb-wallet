@@ -1,6 +1,6 @@
 {
   "name": "@orbserv-labs/orb-wallet",
-  "version": "0.1.5",
+  "version": "0.2.0",
   "description": "TypeScript SDK for the orbserv agent wallet API — multi-chain wallets, x402 auto-pay, and spending policies for AI agents",
   "keywords": [
     "wallet",
@@ -12,7 +12,8 @@
     "arbitrum",
     "usdc",
     "ai-agent",
-    "orbserv"
+    "orbserv",
+    "covenant"
   ],
   "homepage": "https://orbserv.co",
   "license": "MIT",
