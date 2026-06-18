@@ -134,13 +134,13 @@ covenant capabilities grant wallet.spend.authorize
 Smoke-test the contract before pointing the SDK at it:
 
 ```bash
-curl -sS -X POST http://127.0.0.1:8421/spend/authorize \
+curl -sS -X POST http://localhost:<COVENANT_PORT>/spend/authorize \
   -H "Authorization: Bearer $COVENANT_TOKEN" \
   -H "Content-Type: application/json" \
   -d '{
     "provider": "orbserv",
     "network": "eip155:8453",
-    "asset": "0x833589fCD6eDb6E08f4c7C32D4f71b54bdA02913",
+    "asset": "0xYOUR_TOKEN_CONTRACT_ADDRESS",
     "amount": "80000",
     "per_call_cap": "100000",
     "credits": 8,
@@ -154,7 +154,7 @@ curl -sS -X POST http://127.0.0.1:8421/spend/authorize \
 const orb = new OrbWallet({
   apiKey: process.env.ORB_API_KEY!,
   covenant: {
-    gatewayUrl: "http://127.0.0.1:8421",   // daemon base URL
+    gatewayUrl: "http://localhost:<COVENANT_PORT>",   // daemon base URL
     token: process.env.COVENANT_TOKEN!,    // daemon bearer token
     // perCallCap is an atomic decimal string; when omitted, the wallet
     // policy's maxPerTx is used as the per-call cap instead.
@@ -484,7 +484,7 @@ logSettlementFailure({
   decisionId: "dec_ok_1",
   provider: "orbserv",
   network: "eip155:8453",
-  asset: "0x833589fCD6eDb6E08f4c7C32D4f71b54bdA02913",
+  asset: "0xYOUR_TOKEN_CONTRACT_ADDRESS",
   amount: "80000",
   credits: "8",
   txHash: "0xtxhash",
@@ -531,7 +531,7 @@ Add to `~/Library/Application Support/Claude/claude_desktop_config.json`:
       "env": {
         "ORB_API_KEY": "orb_your_api_key_here",
         "ORB_BASE_URL": "https://api.orbserv.co/v1",
-        "COVENANT_GATEWAY_URL": "http://127.0.0.1:8421",
+        "COVENANT_GATEWAY_URL": "http://localhost:<COVENANT_PORT>",
         "COVENANT_TOKEN": "your_covenant_bearer_token",
         "COVENANT_PROVIDER": "orbserv",
         "COVENANT_PER_CALL_CAP": "100000"
